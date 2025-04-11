@@ -1,0 +1,481 @@
+#Import Libraries
+from google.colab import drive
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datasets import load_dataset
+import os
+import json
+import requests
+from zipfile import ZipFile
+import cv2
+import IPython.display as display
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.utils import to_categorical
+
+#Mount GDrive
+drive.mount('/content/drive')
+
+# Load the dataset from Hugging Face
+dataset = load_dataset("ai4bharat/INCLUDE")
+print(dataset)
+
+df = pd.DataFrame(dataset["train"])
+print(df.head())
+
+# Label distribution
+plt.figure(figsize=(12, 5))
+sns.countplot(y=df["label"], order=df["label"].value_counts().index, palette="viridis")
+plt.title("Label Distribution")
+plt.xlabel("Count")
+plt.ylabel("Label")
+plt.show()
+
+# Parent label distribution
+plt.figure(figsize=(10, 4))
+sns.countplot(y=df["parent_label"], order=df["parent_label"].value_counts().index, palette="coolwarm")
+plt.title("Parent Label Distribution")
+plt.xlabel("Count")
+plt.ylabel("Parent Label")
+plt.show()
+
+# Missing values
+print("Missing values:\n", df.isnull().sum())
+
+# Unique counts
+print(f"Unique Labels: {df['label'].nunique()}")
+print(f"Unique Parent Labels: {df['parent_label'].nunique()}")
+
+# Base URL for the Zenodo API
+base_url = "https://zenodo.org/api/records/4010759"
+
+# Fetch metadata from Zenodo
+response = requests.get(base_url)
+metadata = response.json()
+
+# Create a directory for the dataset
+dataset_dir = "/content/drive/MyDrive/INCLUDE_videos"
+os.makedirs(dataset_dir, exist_ok=True)
+
+# Download files
+for file in metadata["files"]:
+    file_url = file["links"]["self"]
+    file_name = file["key"]
+    file_path = os.path.join(dataset_dir, file_name)
+
+    print(f"Downloading {file_name}...")
+
+    # Stream download for large files
+    with requests.get(file_url, stream=True) as r:
+        with open(file_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+    print(f"{file_name} downloaded.")
+
+# Unzip all files
+for file_name in os.listdir(dataset_dir):
+    if file_name.endswith(".zip"):
+        zip_path = os.path.join(dataset_dir, file_name)
+        print(f"Unzipping {file_name}...")
+
+        with ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(dataset_dir)
+
+        print(f"{file_name} unzipped.")
+
+# Check extracted files
+print("All files downloaded and extracted.")
+!ls -lh $dataset_dir
+
+video_dir = "/content/drive/MyDrive/INCLUDE_videos"
+video_files = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
+print("Found videos:", video_files[:5])  # Display first 5 video files
+
+video_dir = "/content/drive/MyDrive/INCLUDE_videos"  # Change this if needed
+output_dir = "/content/drive/MyDrive/frames"
+os.makedirs(output_dir, exist_ok=True)
+
+# Get all video files
+video_files = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
+
+def extract_frames(video_path, output_folder, fps=1):
+    """Extract frames from a video at a specified FPS."""
+    os.makedirs(output_folder, exist_ok=True)
+
+    cap = cv2.VideoCapture(video_path)
+    frame_rate = cap.get(cv2.CAP_PROP_FPS)  # Get original FPS
+    frame_interval = int(frame_rate / fps) if fps else 1  # Extract every nth frame
+
+    count = 0
+    frame_count = 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break  # End of video
+
+        if count % frame_interval == 0:
+            frame_filename = os.path.join(output_folder, f"frame_{frame_count:04d}.jpg")
+            cv2.imwrite(frame_filename, frame)
+            frame_count += 1
+
+        count += 1
+
+    cap.release()
+    print(f"Extracted {frame_count} frames from {video_path}")
+
+# Process all videos
+for video in video_files:
+    video_path = os.path.join(video_dir, video)
+    output_folder = os.path.join(output_dir, os.path.splitext(video)[0])  # Create folder for each video
+    extract_frames(video_path, output_folder, fps=1)  # Extract 1 frame per second
+
+print("Frame extraction complete!")
+
+frame_folders = os.listdir(output_dir)
+print("Extracted Frames from Videos:", frame_folders)
+
+# Display a sample frame
+sample_video = frame_folders[0]  # Pick first video folder
+sample_frame_path = os.path.join(output_dir, sample_video, "frame_0000.jpg")  # First frame
+
+display.display(display.Image(sample_frame_path))
+
+input_dir = "/content/drive/MyDrive/frames"  # Folder with extracted frames
+output_dir = "/content/drive/MyDrive/resized_frames"
+os.makedirs(output_dir, exist_ok=True)
+
+# Define target image size (change if needed)
+target_size = (224, 224)
+
+def resize_frames(input_folder, output_folder, size=(224, 224)):
+    """Resize all frames in a folder to a fixed size."""
+    os.makedirs(output_folder, exist_ok=True)
+
+    for frame_name in os.listdir(input_folder):
+        frame_path = os.path.join(input_folder, frame_name)
+
+        if frame_name.endswith((".jpg", ".png")):
+            img = cv2.imread(frame_path)  # Read image
+            img_resized = cv2.resize(img, size)  # Resize
+            output_path = os.path.join(output_folder, frame_name)
+            cv2.imwrite(output_path, img_resized)  # Save resized image
+
+    print(f" Resized frames saved in: {output_folder}")
+
+# Process all video frame folders
+for video_folder in os.listdir(input_dir):
+    input_folder_path = os.path.join(input_dir, video_folder)
+    output_folder_path = os.path.join(output_dir, video_folder)
+
+    if os.path.isdir(input_folder_path):
+        resize_frames(input_folder_path, output_folder_path, size=target_size)
+
+print("All frames resized successfully!")
+
+video_folders = os.listdir(output_dir)
+sample_video = video_folders[0]  # First video folder
+sample_frame_path = os.path.join(output_dir, sample_video, "frame_0000.jpg")
+
+display.display(display.Image(sample_frame_path))
+
+from transformers import ViTModel, ViTImageProcessor
+import torch
+import os
+from PIL import Image
+import numpy as np
+
+# Load pre-trained Vision Transformer
+model_name = "google/vit-base-patch16-224-in21k"
+vit_model = ViTModel.from_pretrained(model_name)
+image_processor = ViTImageProcessor.from_pretrained(model_name)
+
+# Set model to evaluation mode (no training, just inference)
+vit_model.eval()
+
+frame_dir = "/content/drive/MyDrive/resized_frames"  # Folder containing resized frames
+feature_output_dir = "/content/drive/MyDrive/vit_features"
+os.makedirs(feature_output_dir, exist_ok=True)
+
+def extract_vit_features(image_path):
+    """Extract features from an image using ViT."""
+    image = Image.open(image_path).convert("RGB")  # Load image
+    inputs = image_processor(image, return_tensors="pt")  # Process image for ViT
+
+    with torch.no_grad():
+        outputs = vit_model(**inputs)  # Pass image through ViT
+        features = outputs.last_hidden_state[:, 0, :]  # Extract CLS token features
+
+    return features.squeeze().numpy()  # Convert to NumPy array
+
+# Process all frames and extract features
+for video_folder in os.listdir(frame_dir):
+    video_path = os.path.join(frame_dir, video_folder)
+    feature_folder = os.path.join(feature_output_dir, video_folder)
+    os.makedirs(feature_folder, exist_ok=True)
+
+    for frame_name in os.listdir(video_path):
+        frame_path = os.path.join(video_path, frame_name)
+
+        if frame_name.endswith((".jpg", ".png")):
+            features = extract_vit_features(frame_path)  # Extract features
+
+            # Save feature vector
+            feature_path = os.path.join(feature_folder, frame_name.replace(".jpg", ".npy"))
+            np.save(feature_path, features)
+
+print("ViT feature extraction complete!")
+
+video_folders = os.listdir(feature_output_dir)
+sample_video = video_folders[0]  # First video
+feature_files = os.listdir(os.path.join(feature_output_dir, sample_video))
+sample_feature_path = os.path.join(feature_output_dir, sample_video, feature_files[0])
+
+
+sample_features = np.load(sample_feature_path)
+print("Feature Shape:", sample_features.shape) 
+
+
+X = []
+y = []
+
+for label in os.listdir(feature_output_dir):
+    label_folder = os.path.join(feature_output_dir, label)
+
+    for feature_file in os.listdir(label_folder):
+        if feature_file.endswith('.npy'):
+            feature_path = os.path.join(label_folder, feature_file)
+            features = np.load(feature_path)
+            X.append(features)
+            y.append(label)
+
+X = np.array(X)
+y = np.array(y)
+
+print("X shape:", X.shape)
+print("y shape:", y.shape)
+
+le = LabelEncoder()
+y_encoded = le.fit_transform(y)
+y_cat = to_categorical(y_encoded)
+
+X_train, X_val, y_train, y_val = train_test_split(X, y_cat, test_size=0.2, random_state=42)
+
+#Basic NN
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+
+model = Sequential([
+    Dense(256, activation='relu', input_shape=(X.shape[1],)),
+    Dropout(0.3),
+    Dense(128, activation='relu'),
+    Dropout(0.3),
+    Dense(y_cat.shape[1], activation='softmax')
+])
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.summary()
+
+history = model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=15, batch_size=32)
+# Load any frame
+sample_frame_path = "/content/drive/MyDrive/resized_frames/A/frame_0000.jpg"
+sample_features = extract_vit_features(sample_frame_path)
+
+# Predict
+sample_pred = model.predict(np.expand_dims(sample_features, axis=0))
+predicted_class = le.inverse_transform([np.argmax(sample_pred)])
+print("Predicted Label:", predicted_class[0])
+
+#LSTM
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, TimeDistributed, Dense, Dropout
+
+def load_sequence_features(video_folder_path):
+    features = []
+    for fname in sorted(os.listdir(video_folder_path)):
+        if fname.endswith(".npy"):
+            features.append(np.load(os.path.join(video_folder_path, fname)))
+    return np.array(features)
+
+sequence_X = []
+sequence_y = []
+
+for label in os.listdir(feature_output_dir):
+    folder = os.path.join(feature_output_dir, label)
+    features_seq = load_sequence_features(folder)
+
+    if len(features_seq) >= 10:
+        sequence_X.append(features_seq[:10])
+        sequence_y.append(label)
+
+sequence_X = np.array(sequence_X)
+sequence_y = np.array(sequence_y)
+
+seq_y_encoded = to_categorical(LabelEncoder().fit_transform(sequence_y))
+
+X_train_seq, X_val_seq, y_train_seq, y_val_seq = train_test_split(sequence_X, seq_y_encoded, test_size=0.2)
+
+lstm_model = Sequential([
+    LSTM(128, return_sequences=False, input_shape=(10, sequence_X.shape[2])),
+    Dropout(0.3),
+    Dense(64, activation='relu'),
+    Dense(seq_y_encoded.shape[1], activation='softmax')
+])
+
+lstm_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+lstm_model.fit(X_train_seq, y_train_seq, validation_data=(X_val_seq, y_val_seq), epochs=10)
+
+#CNN
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+img_size = (224, 224)
+batch_size = 32
+
+train_datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+
+train_gen = train_datagen.flow_from_directory(
+    "/content/drive/MyDrive/resized_frames",
+    target_size=img_size,
+    batch_size=batch_size,
+    class_mode='categorical',
+    subset='training'
+)
+
+val_gen = train_datagen.flow_from_directory(
+    "/content/drive/MyDrive/resized_frames",
+    target_size=img_size,
+    batch_size=batch_size,
+    class_mode='categorical',
+    subset='validation'
+)
+
+cnn_model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(224,224,3)),
+    MaxPooling2D(2,2),
+    Conv2D(64, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.3),
+    Dense(train_gen.num_classes, activation='softmax')
+])
+
+cnn_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_model.fit(train_gen, validation_data=val_gen, epochs=10)
+
+#Using Pretrained ResNet50
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+img_size = (224, 224)
+batch_size = 32
+
+datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+
+train_gen = datagen.flow_from_directory(
+    "/content/drive/MyDrive/resized_frames",
+    target_size=img_size,
+    batch_size=batch_size,
+    class_mode='categorical',
+    subset='training'
+)
+
+val_gen = datagen.flow_from_directory(
+    "/content/drive/MyDrive/resized_frames",
+    target_size=img_size,
+    batch_size=batch_size,
+    class_mode='categorical',
+    subset='validation'
+)
+
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.4)(x)
+predictions = Dense(train_gen.num_classes, activation='softmax')(x)
+
+resnet_model = Model(inputs=base_model.input, outputs=predictions)
+
+for layer in base_model.layers:
+    layer.trainable = False
+
+resnet_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+resnet_model.fit(train_gen, validation_data=val_gen, epochs=10)
+
+#CNN W Batch Normalisation
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
+
+cnn_bn_model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(224,224,3)),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    Conv2D(64, (3,3), activation='relu'),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    Conv2D(128, (3,3), activation='relu'),
+    BatchNormalization(),
+    MaxPooling2D(2,2),
+
+    Flatten(),
+    Dense(256, activation='relu'),
+    Dropout(0.4),
+    Dense(train_gen.num_classes, activation='softmax')
+])
+
+cnn_bn_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_bn_model.fit(train_gen, validation_data=val_gen, epochs=10)
+
+#ViT
+from transformers import ViTFeatureExtractor, TFViTModel
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+from sklearn.preprocessing import LabelEncoder
+
+
+X = []
+y = []
+
+for label in os.listdir('/content/drive/MyDrive/vit_features'):
+    class_path = os.path.join('/content/drive/MyDrive/vit_features', label)
+    for file in os.listdir(class_path):
+        if file.endswith('.npy'):
+            feature_path = os.path.join(class_path, file)
+            feature = np.load(feature_path)
+            X.append(feature)
+            y.append(label)
+
+X = np.array(X)
+label_encoder = LabelEncoder()
+y_encoded = label_encoder.fit_transform(y)
+y_cat = to_categorical(y_encoded)
+
+X_train, X_val, y_train, y_val = train_test_split(X, y_cat, test_size=0.2, random_state=42)
+
+model = Sequential([
+    Dense(256, activation='relu', input_shape=(X.shape[1],)),
+    Dropout(0.3),
+    Dense(128, activation='relu'),
+    Dropout(0.3),
+    Dense(y_cat.shape[1], activation='softmax')
+])
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.summary()
+
+history = model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=15, batch_size=32)
+
+
+
